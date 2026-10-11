@@ -16,6 +16,9 @@ from unittest.mock import MagicMock, patch
 
 from answer_tray import (
     _encode_rgb_png,
+    _scaled_capture_dimensions,
+    OTTERARY_MAX_CAPTURE_EDGE,
+    OTTERARY_MAX_CAPTURE_PIXELS,
     API_KEY_ENV_VARS,
     APINEX_ENDPOINT,
     APINEX_FREE_VISION_MODELS,
@@ -2051,7 +2054,7 @@ class OtteraryVariantTests(unittest.TestCase):
                 "LASSO_OPENROUTER_ONLY_MODE": False,
                 "LASSOV7_MODE": False,
                 "APP_NAME": "Otterary",
-                "APP_VERSION": "1.0.1",
+                "APP_VERSION": "1.0.2",
                 "APP_DEFAULT_PROVIDER": "openrouter",
                 "PROVIDER_LABELS": {"openrouter": "OpenRouter", "gemini": "Google Gemini"},
                 "API_KEY_ENV_VARS": {
@@ -2125,11 +2128,18 @@ class OtteraryVariantTests(unittest.TestCase):
                     return types.SimpleNamespace(start=kwargs["target"])
 
                 provider_call = "answer_tray.ask_gemini" if provider == "gemini" else "answer_tray.ask_openrouter"
-                with patch("answer_tray.capture_virtual_desktop_png", return_value=bytes(image)):
+                with patch(
+                    "answer_tray.capture_virtual_desktop_png",
+                    return_value=bytes(image),
+                ) as capture:
                     with patch("answer_tray.threading.Thread", side_effect=run_thread_immediately):
                         with patch(provider_call, return_value=(1, "ANSWER: 1")) as request:
                             ScreenAnswerApp._start_capture(app)
 
+                capture.assert_called_once_with(
+                    max_pixels=OTTERARY_MAX_CAPTURE_PIXELS,
+                    max_edge=OTTERARY_MAX_CAPTURE_EDGE,
+                )
                 request.assert_called_once()
                 self.assertFalse(request.call_args.kwargs["retry_transient_errors"])
                 self.assertEqual(app.events.get_nowait(), ("captured", provider))
@@ -2165,7 +2175,7 @@ class OtteraryVariantTests(unittest.TestCase):
             "OTTERARY_MODE": True,
             "OTTERARY_WIN7_MODE": False,
             "APP_NAME": "Otterary",
-            "APP_VERSION": "1.0.1",
+            "APP_VERSION": "1.0.2",
             "APP_DEFAULT_PROVIDER": "openrouter",
             "PROVIDER_LABELS": {"openrouter": "OpenRouter", "gemini": "Google Gemini"},
             "API_KEY_ENV_VARS": {
@@ -3380,6 +3390,73 @@ class PortableConfigTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as config_file:
                 config_file.write("not json")
             self.assertEqual(load_portable_config(path), empty_config)
+
+
+class CaptureSizingTests(unittest.TestCase):
+    def test_legacy_capture_dimensions_remain_unchanged_without_limits(self):
+        self.assertEqual(_scaled_capture_dimensions(7680, 4320), (7680, 4320))
+
+    def test_keeps_standard_desktop_resolution_when_within_limits(self):
+        self.assertEqual(
+            _scaled_capture_dimensions(
+                1920,
+                1080,
+                max_pixels=OTTERARY_MAX_CAPTURE_PIXELS,
+                max_edge=OTTERARY_MAX_CAPTURE_EDGE,
+            ),
+            (1920, 1080),
+        )
+
+    def test_downscales_large_desktop_with_aspect_ratio_and_both_limits(self):
+        original_width, original_height = 3840, 2160
+        width, height = _scaled_capture_dimensions(
+            original_width,
+            original_height,
+            max_pixels=OTTERARY_MAX_CAPTURE_PIXELS,
+            max_edge=OTTERARY_MAX_CAPTURE_EDGE,
+        )
+
+        self.assertLessEqual(width * height, OTTERARY_MAX_CAPTURE_PIXELS)
+        self.assertLessEqual(max(width, height), OTTERARY_MAX_CAPTURE_EDGE)
+        self.assertLess(width, original_width)
+        self.assertLess(height, original_height)
+        self.assertAlmostEqual(
+            float(width) / height,
+            float(original_width) / original_height,
+            places=2,
+        )
+
+    def test_downscales_wide_virtual_desktop_without_cropping(self):
+        original_width, original_height = 7680, 1080
+        width, height = _scaled_capture_dimensions(
+            original_width,
+            original_height,
+            max_pixels=OTTERARY_MAX_CAPTURE_PIXELS,
+            max_edge=OTTERARY_MAX_CAPTURE_EDGE,
+        )
+
+        self.assertEqual(width, OTTERARY_MAX_CAPTURE_EDGE)
+        self.assertLessEqual(width * height, OTTERARY_MAX_CAPTURE_PIXELS)
+        self.assertAlmostEqual(
+            float(width) / height,
+            float(original_width) / original_height,
+            places=2,
+        )
+
+    def test_rejects_invalid_capture_dimensions_and_limits(self):
+        for dimensions in ((0, 1080), (1920, -1)):
+            with self.subTest(dimensions=dimensions):
+                with self.assertRaises(ValueError):
+                    _scaled_capture_dimensions(*dimensions)
+        for max_pixels, max_edge in ((0, 4096), (4_000_000, -1), (True, 4096)):
+            with self.subTest(max_pixels=max_pixels, max_edge=max_edge):
+                with self.assertRaises(ValueError):
+                    _scaled_capture_dimensions(
+                        3840,
+                        2160,
+                        max_pixels=max_pixels,
+                        max_edge=max_edge,
+                    )
 
 
 class PngEncodingTests(unittest.TestCase):

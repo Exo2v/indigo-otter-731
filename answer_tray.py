@@ -167,7 +167,7 @@ OTTERARY_WIN7_MODE = is_otterary_win7_executable()
 OTTERARY_DIAGNOSTIC_CONSOLE_MODE = OTTERARY_MODE
 APP_NAME = "Otterary" if OTTERARY_MODE else (lasso_app_name_for_executable() or "Screen Answer")
 APP_VERSION = (
-    "1.0.1" if OTTERARY_MODE else (APP_NAME.lower() if LASSO1_MODE else "1.7.0-experimental")
+    "1.0.2" if OTTERARY_MODE else (APP_NAME.lower() if LASSO1_MODE else "1.7.0-experimental")
 )
 
 
@@ -334,6 +334,11 @@ FADE_INTERVAL_MS = 300
 FADE_STEPS = FADE_DURATION_MS // FADE_INTERVAL_MS
 MAX_SCREEN_PIXELS = 24_000_000
 MAX_PNG_BYTES = 12 * 1024 * 1024
+# Keep Otterary's full multi-monitor captures useful for reading while reducing
+# very large images before they are base64-encoded for a single provider call.
+OTTERARY_MAX_CAPTURE_PIXELS = 4_000_000
+OTTERARY_MAX_CAPTURE_EDGE = 4_096
+OTTERARY_MAX_SOURCE_PIXELS = 64_000_000
 MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_API_ATTEMPTS = 3
 MAX_RETRY_AFTER_SECONDS = 30
@@ -1397,6 +1402,29 @@ def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
     )
 
 
+def _scaled_capture_dimensions(
+    width: int,
+    height: int,
+    max_pixels: Optional[int] = None,
+    max_edge: Optional[int] = None,
+) -> Tuple[int, int]:
+    """Fit a desktop image within optional limits without cropping or upscaling."""
+    if width <= 0 or height <= 0:
+        raise ValueError("Capture dimensions must be positive.")
+    for name, limit in (("max_pixels", max_pixels), ("max_edge", max_edge)):
+        if limit is not None and (type(limit) is not int or limit <= 0):
+            raise ValueError("%s must be a positive integer." % name)
+
+    scale = 1.0
+    if max_edge is not None:
+        scale = min(scale, float(max_edge) / max(width, height))
+    if max_pixels is not None and width * height > max_pixels:
+        scale = min(scale, math.sqrt(float(max_pixels) / (width * height)))
+    if scale >= 1.0:
+        return width, height
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
 def _encode_rgb_png(width: int, height: int, bgr_pixels: bytes, stride: int) -> bytes:
     """Encode top-down 24-bit BGR rows returned by GetDIBits as a PNG."""
     if width <= 0 or height <= 0:
@@ -1430,8 +1458,11 @@ def _encode_rgb_png(width: int, height: int, bgr_pixels: bytes, stride: int) -> 
     return bytes(png)
 
 
-def capture_virtual_desktop_png() -> bytes:
-    """Capture all Windows monitors into a PNG held only in process memory."""
+def capture_virtual_desktop_png(
+    max_pixels: Optional[int] = None,
+    max_edge: Optional[int] = None,
+) -> bytes:
+    """Capture all Windows monitors into a PNG, optionally scaling before readback."""
     if os.name != "nt":
         raise RuntimeError("Screen capture is supported on Windows only.")
 
@@ -1447,6 +1478,9 @@ def capture_virtual_desktop_png() -> bytes:
             ("rgbRed", wt.BYTE),
             ("rgbReserved", wt.BYTE),
         ]
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", wt.LONG), ("y", wt.LONG)]
 
     class BITMAPINFOHEADER(ctypes.Structure):
         _fields_ = [
@@ -1490,6 +1524,29 @@ def capture_virtual_desktop_png() -> bytes:
         wt.DWORD,
     ]
     gdi32.BitBlt.restype = wt.BOOL
+    gdi32.StretchBlt.argtypes = [
+        wt.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wt.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wt.DWORD,
+    ]
+    gdi32.StretchBlt.restype = wt.BOOL
+    gdi32.SetStretchBltMode.argtypes = [wt.HDC, ctypes.c_int]
+    gdi32.SetStretchBltMode.restype = ctypes.c_int
+    gdi32.SetBrushOrgEx.argtypes = [
+        wt.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(POINT),
+    ]
+    gdi32.SetBrushOrgEx.restype = wt.BOOL
     gdi32.GetDIBits.argtypes = [
         wt.HDC,
         wt.HBITMAP,
@@ -1517,10 +1574,21 @@ def capture_virtual_desktop_png() -> bytes:
     height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
     if width <= 0 or height <= 0:
         raise RuntimeError("Could not determine the desktop dimensions.")
-    if width * height > MAX_SCREEN_PIXELS:
+    source_pixel_limit = (
+        OTTERARY_MAX_SOURCE_PIXELS
+        if max_pixels is not None or max_edge is not None
+        else MAX_SCREEN_PIXELS
+    )
+    if width * height > source_pixel_limit:
         raise RuntimeError(
             "The combined desktop is too large for this lightweight capture path."
         )
+    capture_width, capture_height = _scaled_capture_dimensions(
+        width,
+        height,
+        max_pixels=max_pixels,
+        max_edge=max_edge,
+    )
 
     screen_dc = user32.GetDC(None)
     if not screen_dc:
@@ -1532,33 +1600,56 @@ def capture_virtual_desktop_png() -> bytes:
         memory_dc = gdi32.CreateCompatibleDC(screen_dc)
         if not memory_dc:
             raise RuntimeError("Could not create a screen capture buffer.")
-        bitmap = gdi32.CreateCompatibleBitmap(screen_dc, width, height)
+        bitmap = gdi32.CreateCompatibleBitmap(screen_dc, capture_width, capture_height)
         if not bitmap:
             raise RuntimeError("Could not allocate the screen capture bitmap.")
         old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
         if not old_bitmap:
             raise RuntimeError("Could not initialize the screen capture bitmap.")
-        if not gdi32.BitBlt(
-            memory_dc,
-            0,
-            0,
-            width,
-            height,
-            screen_dc,
-            left,
-            top,
-            0x00CC0020 | 0x40000000,  # SRCCOPY | CAPTUREBLT
-        ):
+        raster_op = 0x00CC0020 | 0x40000000  # SRCCOPY | CAPTUREBLT
+        if (capture_width, capture_height) == (width, height):
+            copied = gdi32.BitBlt(
+                memory_dc,
+                0,
+                0,
+                width,
+                height,
+                screen_dc,
+                left,
+                top,
+                raster_op,
+            )
+        else:
+            # HALFTONE preserves UI edges better than simply dropping pixels.
+            if not gdi32.SetStretchBltMode(memory_dc, 4):  # HALFTONE
+                raise RuntimeError("Windows could not configure screenshot scaling.")
+            brush_origin = POINT()
+            if not gdi32.SetBrushOrgEx(memory_dc, 0, 0, ctypes.byref(brush_origin)):
+                raise RuntimeError("Windows could not initialize screenshot scaling.")
+            copied = gdi32.StretchBlt(
+                memory_dc,
+                0,
+                0,
+                capture_width,
+                capture_height,
+                screen_dc,
+                left,
+                top,
+                width,
+                height,
+                raster_op,
+            )
+        if not copied:
             raise RuntimeError("Windows could not copy the desktop into memory.")
         gdi32.SelectObject(memory_dc, old_bitmap)
         old_bitmap = None
 
-        stride = ((width * 24 + 31) // 32) * 4
-        image_size = stride * height
+        stride = ((capture_width * 24 + 31) // 32) * 4
+        image_size = stride * capture_height
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = width
-        bmi.bmiHeader.biHeight = -height  # top-down rows
+        bmi.bmiHeader.biWidth = capture_width
+        bmi.bmiHeader.biHeight = -capture_height  # top-down rows
         bmi.bmiHeader.biPlanes = 1
         bmi.bmiHeader.biBitCount = 24
         bmi.bmiHeader.biCompression = 0  # BI_RGB
@@ -1568,14 +1659,14 @@ def capture_virtual_desktop_png() -> bytes:
             screen_dc,
             bitmap,
             0,
-            height,
+            capture_height,
             ctypes.cast(buffer, ctypes.c_void_p),
             ctypes.byref(bmi),
             0,  # DIB_RGB_COLORS
         )
-        if rows != height:
+        if rows != capture_height:
             raise RuntimeError("Windows returned an incomplete screen capture.")
-        return _encode_rgb_png(width, height, buffer.raw, stride)
+        return _encode_rgb_png(capture_width, capture_height, buffer.raw, stride)
     finally:
         if old_bitmap and memory_dc:
             gdi32.SelectObject(memory_dc, old_bitmap)
@@ -5446,7 +5537,18 @@ class ScreenAnswerApp:
             try:
                 capture_started = time.monotonic()
                 self._log_diagnostic("Desktop capture started.")
-                image = capture_virtual_desktop_png()
+                if otterary_mode:
+                    self._log_diagnostic(
+                        "Otterary will preserve all monitors and scale only oversized captures "
+                        "to at most %d pixels and a %d-pixel longest edge."
+                        % (OTTERARY_MAX_CAPTURE_PIXELS, OTTERARY_MAX_CAPTURE_EDGE)
+                    )
+                    image = capture_virtual_desktop_png(
+                        max_pixels=OTTERARY_MAX_CAPTURE_PIXELS,
+                        max_edge=OTTERARY_MAX_CAPTURE_EDGE,
+                    )
+                else:
+                    image = capture_virtual_desktop_png()
                 width, height = struct.unpack_from(">II", image, 16)
                 self._log_diagnostic(
                     "Desktop capture succeeded: %d x %d pixels, %d PNG bytes, %.2f seconds."
@@ -5846,7 +5948,7 @@ def main() -> int:
             OTTERARY_MODE
             and not OTTERARY_WIN7_MODE
             and APP_NAME == "Otterary"
-            and APP_VERSION == "1.0.1"
+            and APP_VERSION == "1.0.2"
             and APP_DEFAULT_PROVIDER == "openrouter"
             and tuple(PROVIDER_LABELS) == ("openrouter", "gemini")
             and tuple(DEFAULT_MODELS) == ("openrouter", "gemini")
@@ -5876,7 +5978,7 @@ def main() -> int:
             OTTERARY_MODE
             and OTTERARY_WIN7_MODE
             and APP_NAME == "Otterary"
-            and APP_VERSION == "1.0.1"
+            and APP_VERSION == "1.0.2"
             and APP_DEFAULT_PROVIDER == "openrouter"
             and tuple(PROVIDER_LABELS) == ("openrouter", "gemini")
             and otterary_config_directory_for_executable("OtteraryWin7.exe")

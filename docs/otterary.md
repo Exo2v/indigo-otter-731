@@ -1,6 +1,6 @@
 # Otterary version 1
 
-Otterary is a standalone Windows tray app family, separate from Screen Answer and every Lasso release. The current no-retry release is `otterary-v1.0.1`; the original `otterary` tag remains version 1.0.0. Each release publishes two builds:
+Otterary is a standalone Windows tray app family, separate from Screen Answer and every Lasso release. The latest published no-retry release is `otterary-v1.0.1`; the original `otterary` tag remains version 1.0.0. The upcoming source version is 1.0.2; the published 1.0.1 assets remain unchanged. Each release publishes two builds:
 
 - `Otterary.exe` — Windows 11 x64, packaged with Python 3.11.
 - `OtteraryWin7.exe` — Windows 7 x86, packaged with Python 3.8.10.
@@ -11,7 +11,7 @@ Otterary supports **Google Gemini** and **OpenRouter**. On first launch, its Set
 
 Settings are stored separately for each build at `%APPDATA%\Otterary\config.json` or `%APPDATA%\OtteraryWin7\config.json`. API keys are plain text in that per-user file; keep it private. The model ID can be edited in Settings. OpenRouter is restricted to the configured vision model IDs `google/gemma-4-31b-it:free` and `google/gemma-4-26b-a4b-it:free`. Gemini uses the selected Google Gemini model ID directly. Provider access, quotas, data terms, and billing can change; check the provider's current account terms. Do not assume unlimited or guaranteed-free usage.
 
-The app sends a full-desktop image only after you trigger a capture and save consent. It uses only the selected provider; it does not switch to another provider, perform live web search, or execute tools. Only capture screens you are allowed to share, and only where AI assistance is permitted.
+The app sends a full-desktop image only after you trigger a capture and save consent. All connected monitors remain included. For Otterary only, oversized captures are proportionally scaled in memory to at most 4 million pixels and a 4,096-pixel longest edge before being encoded as PNG; smaller captures stay at native resolution. Scaling reduces upload size but can make fine screen text less legible. Screenshots are not written to disk. Otterary uses only the selected provider; it does not switch to another provider, perform live web search, or execute tools. Only capture screens you are allowed to share, and only where AI assistance is permitted.
 
 ## Tray controls
 

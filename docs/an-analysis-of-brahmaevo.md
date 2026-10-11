@@ -4,6 +4,8 @@
 
 **Source snapshot:** `main` at commit [`2439ebf5df27e10420962fa091ecb75677dfdca9`](https://github.com/titechprabhasolutions/Brahma-Echo/commit/2439ebf5df27e10420962fa091ecb75677dfdca9), dated 2026-09-20. This is a source-code review, not a live reliability benchmark; later commits may differ.
 
+**Otterary comparison update:** This branch now prepares source version 1.0.2 with a conservative, Otterary-only image-size cap: it retains every monitor and PNG encoding, but proportionally scales captures only when they exceed 4 million pixels or a 4,096-pixel longest edge. The published 1.0.1 assets remain unchanged. The one-request/no-automatic-retry rule is unchanged.
+
 ## Executive summary
 
 Brahma Echo has several recovery layers that can make it *feel* more reliable than a one-request screenshot app:
@@ -52,16 +54,16 @@ The screen processor maintains a persistent Gemini Live connection, queues the J
 
 ## Comparison with Otterary
 
-| | Brahma Echo (reviewed snapshot) | Otterary 1.0.1 in this repository |
+| | Brahma Echo (reviewed snapshot) | Otterary source branch (upcoming 1.0.2; published 1.0.1 unchanged) |
 |---|---|---|
-| Screenshot payload | Normally a primary-display JPEG limited to 640 × 360 at quality 55. | Full virtual-desktop PNG, including connected monitors. |
+| Screenshot payload | Normally a primary-display JPEG limited to 640 × 360 at quality 55. | Full virtual desktop and all monitors in PNG; only oversized captures are proportionally scaled to at most 4 million pixels and a 4,096-pixel longest edge. |
 | Gemini route | Gemini Live sessions for live conversation and screen analysis; a separate `gemini-2.5-flash` call in the text fallback. | One direct Gemini request to the user-selected model for a capture. |
 | OpenRouter route | Text/vision model pools with per-model attempts and pool failover in the shared OpenRouter client. | One request to the configured OpenRouter vision model; no model-pool or provider fallback. |
-| Retry policy | Session reconnect loops plus repeated OpenRouter requests. | Exactly one provider HTTP attempt per accepted capture. |
+| Retry policy | Session reconnect loops plus repeated OpenRouter requests. | Exactly one provider HTTP attempt per accepted capture; image scaling does not make another request. |
 
-Otterary’s shared Gemini/OpenRouter helper functions still have retry-capable defaults for other app families, but the Otterary call sites explicitly pass `retry_transient_errors=False`. Its regression tests cover that no-retry behavior. Copying Brahma Echo’s retries, OpenRouter model pool, or Gemini-to-OpenRouter fallback would change Otterary’s current one-attempt contract; **no Otterary behavior was changed for this analysis**.
+Otterary’s shared Gemini/OpenRouter helper functions still have retry-capable defaults for other app families, but the Otterary call sites explicitly pass `retry_transient_errors=False`. Its regression tests cover that no-retry behavior. Copying Brahma Echo’s retries, OpenRouter model pool, or Gemini-to-OpenRouter fallback would change Otterary’s current one-attempt contract; **those behaviors remain unimplemented**.
 
-A smaller JPEG could be evaluated independently as a payload/performance change, but it can make small screen text harder to read. That should be treated as a separate product decision, not as a reliability guarantee. An exact Brahma-style port would require explicitly revisiting the no-retry requirement first.
+The branch applies only the lower-risk image-size lesson: retain a lossless PNG and every display, but use GDI’s halftone scaling for captures above the Otterary caps. This can still reduce fine-text detail, so the limits are conservative and covered by geometry tests; a real Windows display check is still needed. It makes no extra provider calls. An exact Brahma-style retry/fallback port would require explicitly revisiting the no-retry requirement first.
 
 ## Reliability verdict
 
@@ -79,4 +81,4 @@ The reviewed repository contains screen-processor unit tests with mocked capture
 - [Screen image sizing, Gemini Live reconnection, send queue, and result handling](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/actions/screen_processor.py#L35-L52), [image compression](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/actions/screen_processor.py#L110-L145), [live connection and send loop](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/actions/screen_processor.py#L200-L269), and [screen request dispatch](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/actions/screen_processor.py#L360-L455)
 - [UI screenshot capture](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/ui.py#L9555-L9579) and [provider-switch setting](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/ui.py#L10760-L10761)
 - [Screen-processor tests](https://github.com/titechprabhasolutions/Brahma-Echo/blob/2439ebf5df27e10420962fa091ecb75677dfdca9/tests/test_screen_processor.py#L7-L65)
-- This repository’s [Otterary request call sites](../answer_tray.py#L5488-L5505) and [no-retry documentation](otterary.md#request-behavior).
+- This repository’s [Otterary request call sites](../answer_tray.py#L5589-L5606) and [no-retry documentation](otterary.md#request-behavior).

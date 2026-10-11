@@ -469,7 +469,7 @@ jobs:
 
             Gemini sends captures directly to Google's API. OpenRouter is limited to the configured Gemma `:free` vision model IDs. The app does not switch providers or invoke live web search or tools. Provider usage limits, data terms, and billing can change; check the selected provider's current terms and do not assume unlimited or guaranteed free usage.
 
-            Ctrl+Alt+S captures the full desktop and sends it only after upload consent is saved. The tray icon reports answer choices with color and fades back to grey; Otterary creates no hover tooltip and no tray balloons/notifications. Right-click the tray icon and choose `Open diagnostic console` to show diagnostics; it remains hidden until requested and omits API keys and screenshot pixels.
+            Ctrl+Alt+S captures the full desktop and sends it only after upload consent is saved. All monitors stay included; oversized captures are proportionally scaled in memory to at most 4 million pixels and a 4,096-pixel longest edge, which may make fine text less legible. The tray icon reports answer choices with color and fades back to grey; Otterary creates no hover tooltip and no tray balloons/notifications. Right-click the tray icon and choose `Open diagnostic console` to show diagnostics; it remains hidden until requested and omits API keys and screenshot pixels.
 
             Ctrl+Alt+O silently closes Otterary and schedules deletion of only the running executable and its matching config file. The config folder is removed only when empty. The right-click `Self-destruct Otterary…` action asks for confirmation.
           files: |
